@@ -1,8 +1,11 @@
+import { inflateRawSync } from "node:zlib";
 import { ProviderError, compactDate, numberValue, changeSign } from "../common.mjs";
 
 const UA = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/149 Safari/537.36";
-const ALLOWED_HOSTS = new Set(["m.stock.naver.com", "api.stock.naver.com", "polling.finance.naver.com", "finance.naver.com"]);
+const ALLOWED_HOSTS = new Set(["m.stock.naver.com", "api.stock.naver.com", "polling.finance.naver.com", "finance.naver.com", "new.real.download.dws.co.kr"]);
+const KIS_SECTOR_MASTER_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.mst.zip";
 const cache = new Map();
+const binaryCache = new Map();
 let gate = Promise.resolve();
 let lastRequestAt = 0;
 
@@ -41,6 +44,54 @@ async function request(url, { ttlMs = 0, accept = "application/json,text/plain,*
   });
   if (ttlMs > 0) cache.set(key, { expires: Date.now() + ttlMs, value });
   return { ...value, cached: false };
+}
+
+async function requestBytes(url, { ttlMs = 0, accept = "application/octet-stream,*/*" } = {}) {
+  const parsed = new URL(url);
+  if (!ALLOWED_HOSTS.has(parsed.hostname)) throw new ProviderError("HOST_NOT_ALLOWED", `Blocked upstream host: ${parsed.hostname}`);
+  const key = parsed.toString();
+  const hit = binaryCache.get(key);
+  if (hit && hit.expires > Date.now()) return { ...hit.value, cached: true };
+  const value = await limited(async () => {
+    const response = await fetch(parsed, { headers: { "user-agent": UA, accept }, signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new ProviderError(`HTTP_${response.status}`, `KIS public master returned HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    return { bytes, url: key };
+  });
+  if (ttlMs > 0) binaryCache.set(key, { expires: Date.now() + ttlMs, value });
+  return { ...value, cached: false };
+}
+
+function unzipSingleEntry(zipBytes) {
+  const z = Buffer.from(zipBytes);
+  const u16 = (o) => z.readUInt16LE(o), u32 = (o) => z.readUInt32LE(o);
+  let eocd = -1;
+  for (let i = z.length - 22; i >= Math.max(0, z.length - 65557); i -= 1) {
+    if (u32(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new ProviderError("BAD_KIS_MASTER", "KIS sector master ZIP end record not found");
+  const cdOffset = u32(eocd + 16);
+  if (cdOffset + 46 > z.length || u32(cdOffset) !== 0x02014b50) throw new ProviderError("BAD_KIS_MASTER", "KIS sector master central directory invalid");
+  const method = u16(cdOffset + 10), compressedSize = u32(cdOffset + 20), uncompressedSize = u32(cdOffset + 24);
+  const nameLength = u16(cdOffset + 28), localOffset = u32(cdOffset + 42);
+  const name = z.subarray(cdOffset + 46, cdOffset + 46 + nameLength).toString("utf8");
+  if (name !== "idxcode.mst" || uncompressedSize > 2_000_000 || localOffset + 30 > z.length || u32(localOffset) !== 0x04034b50) throw new ProviderError("BAD_KIS_MASTER", "Unexpected KIS sector master ZIP structure");
+  const localNameLength = u16(localOffset + 26), localExtraLength = u16(localOffset + 28);
+  const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+  const dataEnd = dataStart + compressedSize;
+  if (dataStart < 0 || dataEnd > z.length) throw new ProviderError("BAD_KIS_MASTER", "KIS sector master ZIP entry exceeds archive bounds");
+  const compressed = z.subarray(dataStart, dataEnd);
+  const raw = method === 0 ? compressed : method === 8 ? inflateRawSync(compressed) : null;
+  if (!raw || raw.length !== uncompressedSize) throw new ProviderError("BAD_KIS_MASTER", `Unsupported or invalid KIS sector master ZIP method ${method}`);
+  return raw;
+}
+
+async function getSectorMetadata(sectorCode) {
+  const { bytes, url, cached } = await requestBytes(KIS_SECTOR_MASTER_URL, { ttlMs: 6 * 60 * 60 * 1000, accept: "application/zip,*/*" });
+  const text = new TextDecoder("euc-kr").decode(unzipSingleEntry(bytes));
+  const row = text.split(/\r?\n/).find((line) => line.length >= 5 && line.slice(1, 5) === sectorCode);
+  if (!row) throw new ProviderError("NOT_FOUND", `KIS sector code ${sectorCode} not found in public master`);
+  return { code: sectorCode, name: row.slice(5).trim(), url, cached };
 }
 
 function unwrapFront(json) {
@@ -187,7 +238,7 @@ export async function stockQuote(code, { include_extended = true } = {}) {
   return { data, sourceApi: "naver-basic+integration", rawRef: basic.rawRef, cached: basic.cached && (integ?.cached ?? true) };
 }
 
-const periodMap = { D: "dayCandle", W: "weekCandle", M: "monthCandle", Y: "year" };
+const periodMap = { D: "dayCandle", W: "weekCandle", M: "monthCandle", Y: "yearCandle" };
 export async function stockHistory(code, { period = "D", start_date, end_date, limit = 100, adjusted = true } = {}) {
   const p = periodMap[period] || "dayCandle";
   const url = new URL(`https://api.stock.naver.com/chart/domestic/item/${encodeURIComponent(code)}`);
@@ -283,10 +334,30 @@ export async function indexData(index, { mode = "quote", period = "D", date, lim
 }
 
 export async function marketSector(sector_code, opts = {}) {
+  const sector = await getSectorMetadata(sector_code);
+  const period = opts.period || "D";
   const alias = { "0001": "KOSPI", "1001": "KOSDAQ", "2001": "KOSPI200" }[sector_code];
-  if (!alias) throw new ProviderError("UNSUPPORTED_PUBLIC_SOURCE", `Sector code ${sector_code} has no verified no-secret Naver index mapping in WORK-A`);
-  const result = await indexData(alias, { mode: "history", period: opts.period, date: opts.end_date, limit: opts.limit });
-  return { ...result, data: { sector_code, rows: result.data.rows }, warnings: [...(result.warnings || []), "Only canonical broad-index aliases are mapped during WORK-A."] };
+  if (!alias) {
+    return {
+      data: { sector_code, sector_name: sector.name, period, snapshot: null, rows: [] },
+      source: "KIS", sourceApi: "korea-investment-public-idxcode-master", rawRef: sector.url, cached: sector.cached,
+      warnings: [`KIS public master verifies ${sector_code}=${sector.name}; no exact no-secret market-data mapping was proven, so snapshot/history are omitted.`],
+    };
+  }
+  const quote = await indexData(alias, { mode: "quote" });
+  if (period !== "D") {
+    return {
+      data: { sector_code, sector_name: sector.name, period, snapshot: quote.data, rows: [] },
+      sourceApi: "naver-index-basic+korea-investment-public-idxcode-master", rawRef: `${quote.rawRef} | ${sector.url}`, cached: quote.cached && sector.cached,
+      warnings: ["Only daily broad-index history is verified from the public Naver source; W/M/Y sector rows are omitted rather than relabeled from daily data."],
+    };
+  }
+  const history = await indexData(alias, { mode: "history", period: "D", date: opts.end_date, limit: opts.limit });
+  return {
+    data: { sector_code, sector_name: sector.name, period, snapshot: quote.data, rows: history.data.rows },
+    sourceApi: "naver-index-basic+naver-index-price-list+korea-investment-public-idxcode-master", rawRef: `${quote.rawRef} | ${history.rawRef} | ${sector.url}`, cached: quote.cached && history.cached && sector.cached,
+    warnings: ["KIS public master supplies the sector name; Naver market data is used only for exact broad-index aliases."],
+  };
 }
 
 export async function marketNews({ stock_code, date, time, limit = 20 } = {}) {
