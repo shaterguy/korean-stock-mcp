@@ -10,6 +10,26 @@ let gate = Promise.resolve();
 let lastRequestAt = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+async function fetchGet(parsed, headers) {
+  const backoffMs = [150, 400];
+  for (let attempt = 0; attempt <= backoffMs.length; attempt += 1) {
+    try {
+      const response = await fetch(parsed, { headers, signal: AbortSignal.timeout(15000) });
+      const retryableStatus = response.status === 429 || response.status >= 500;
+      if (retryableStatus && attempt < backoffMs.length) {
+        if (response.body) await response.body.cancel().catch(() => undefined);
+        await sleep(backoffMs[attempt]);
+        continue;
+      }
+      return response;
+    } catch (error) {
+      const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+      if (!timedOut || attempt >= backoffMs.length) throw error;
+      await sleep(backoffMs[attempt]);
+    }
+  }
+  throw new ProviderError("UPSTREAM_RETRY_EXHAUSTED", "GET retry budget exhausted");
+}
 async function limited(fn) {
   const run = gate.then(async () => {
     const wait = Math.max(0, 75 - (Date.now() - lastRequestAt));
@@ -28,10 +48,7 @@ async function request(url, { ttlMs = 0, accept = "application/json,text/plain,*
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return { ...hit.value, cached: true };
   const value = await limited(async () => {
-    const response = await fetch(parsed, {
-      headers: { "user-agent": UA, accept, referer: parsed.hostname === "finance.naver.com" ? "https://finance.naver.com/" : "https://m.stock.naver.com/" },
-      signal: AbortSignal.timeout(15000),
-    });
+    const response = await fetchGet(parsed, { "user-agent": UA, accept, referer: parsed.hostname === "finance.naver.com" ? "https://finance.naver.com/" : "https://m.stock.naver.com/" });
     if (!response.ok) throw new ProviderError(`HTTP_${response.status}`, `Naver upstream returned HTTP ${response.status}`);
     const contentType = response.headers.get("content-type") || "";
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -53,7 +70,7 @@ async function requestBytes(url, { ttlMs = 0, accept = "application/octet-stream
   const hit = binaryCache.get(key);
   if (hit && hit.expires > Date.now()) return { ...hit.value, cached: true };
   const value = await limited(async () => {
-    const response = await fetch(parsed, { headers: { "user-agent": UA, accept }, signal: AbortSignal.timeout(15000) });
+    const response = await fetchGet(parsed, { "user-agent": UA, accept });
     if (!response.ok) throw new ProviderError(`HTTP_${response.status}`, `KIS public master returned HTTP ${response.status}`);
     const bytes = Buffer.from(await response.arrayBuffer());
     return { bytes, url: key };
@@ -149,10 +166,10 @@ export async function resolveStock(query, { market = "ALL", limit = 10 } = {}) {
   return { data: { matches }, sourceApi: "naver-autocomplete", rawRef: url, cached };
 }
 
-async function legacyMarket(market) {
+async function legacyMarket(market, ttlMs = 300000) {
   const sosok = market === "KOSDAQ" ? "1" : "0";
   const url = `https://m.stock.naver.com/api/json/sise/siseListJson.nhn?menu=market_sum&sosok=${sosok}&pageSize=5000&page=1`;
-  const { json, cached } = await request(url, { ttlMs: 300000 });
+  const { json, cached } = await request(url, { ttlMs });
   if (json?.resultCode !== "success" || !Array.isArray(json?.result?.itemList)) throw new ProviderError("NAVER_API_ERROR", "Legacy market master response invalid");
   return { rows: json.result.itemList, total: json.result.totCnt, url, cached };
 }
@@ -199,7 +216,7 @@ export async function stockBasic(code) {
 
 export async function stockIntegration(code) {
   const url = `https://m.stock.naver.com/api/stock/${encodeURIComponent(code)}/integration`;
-  const { json, cached } = await request(url, { ttlMs: 15000 });
+  const { json, cached } = await request(url, { ttlMs: 5000 });
   return { data: json, sourceApi: "naver-stock-integration", rawRef: url, cached };
 }
 
@@ -246,7 +263,7 @@ export async function stockHistory(code, { period = "D", start_date, end_date, l
   const start = compactDate(start_date), end = compactDate(end_date);
   if (start) url.searchParams.set("startDateTime", `${start}0000`);
   if (end) url.searchParams.set("endDateTime", `${end}2359`);
-  const { json, cached } = await request(url.toString(), { ttlMs: 30000 });
+  const { json, cached } = await request(url.toString(), { ttlMs: 60000 });
   const rows = (json?.priceInfos || []).filter((r) => {
     const d = compactDate(r.localDate);
     return (!start || d >= start) && (!end || d <= end);
@@ -298,7 +315,7 @@ export async function etfQuote(code) {
 
 export async function etfHoldings(code, { limit = 30 } = {}) {
   const url = `https://m.stock.naver.com/api/etf/${encodeURIComponent(code)}/basic`;
-  const { json: b, cached } = await request(url, { ttlMs: 15000 });
+  const { json: b, cached } = await request(url, { ttlMs: 300000 });
   const rows = Array.isArray(b?.constituentList) ? b.constituentList : [];
   if (!rows.length) throw new ProviderError("UNSUPPORTED_PUBLIC_SOURCE", "Naver ETF basic response contains no constituentList for this instrument");
   const holdings = rows.slice(0, limit).map((r) => ({
@@ -326,7 +343,7 @@ export async function indexData(index, { mode = "quote", period = "D", date, lim
     return { data: { index, mode, price: numberValue(b.closePrice), change: numberValue(b.compareToPreviousClosePrice), change_sign: changeSign(b.compareToPreviousPrice), change_rate: numberValue(b.fluctuationsRatio), open: numberValue(b.openPrice), high: numberValue(b.highPrice), low: numberValue(b.lowPrice), volume: numberValue(b.accumulatedTradingVolume), trading_value: numberValue(b.accumulatedTradingValue) }, sourceApi: "naver-index-basic", rawRef: url, cached };
   }
   const url = `https://m.stock.naver.com/front-api/stock/domestic/index/price/list?code=${encodeURIComponent(code)}&page=1&pageSize=${Math.min(limit, 100)}`;
-  const { json, cached } = await request(url, { ttlMs: 30000 });
+  const { json, cached } = await request(url, { ttlMs: 5000 });
   let rows = unwrapFront(json) || [];
   const target = compactDate(date);
   rows = rows.filter((r) => !target || compactDate(r.localTradedAt) <= target).slice(0, limit).map((r) => ({ date: compactDate(r.localTradedAt), open: numberValue(r.openPrice), high: numberValue(r.highPrice), low: numberValue(r.lowPrice), close: numberValue(r.closePrice), change: numberValue(r.compareToPreviousClosePrice), change_sign: changeSign(r.compareToPreviousPrice), change_rate: numberValue(r.fluctuationsRatio), volume: numberValue(r.accumulatedTradingVolume), trading_value: numberValue(r.accumulatedTradingValue) }));
@@ -362,7 +379,7 @@ export async function marketSector(sector_code, opts = {}) {
 
 export async function marketNews({ stock_code, date, time, limit = 20 } = {}) {
   const url = stock_code ? `https://m.stock.naver.com/front-api/news/list/integration?itemCode=${encodeURIComponent(stock_code)}&page=1&pageSize=${Math.min(limit, 200)}` : `https://m.stock.naver.com/front-api/news/category?category=mainnews&page=1&pageSize=${Math.min(limit, 200)}`;
-  const { json, cached } = await request(url, { ttlMs: 15000 });
+  const { json, cached } = await request(url, { ttlMs: 30000 });
   const result = unwrapFront(json);
   const rows = Array.isArray(result) ? result : (result?.stockNewsList || result?.newsList || result?.items || result?.list || result?.news || []);
   const cutoffDate = compactDate(date);
@@ -395,7 +412,7 @@ export async function marketMovers({ ranking_type, market = "ALL", direction = "
   const all = [];
   const refs = [];
   for (const m of markets) {
-    const got = await legacyMarket(m); refs.push(got.url);
+    const got = await legacyMarket(m, 5000); refs.push(got.url);
     for (const row of got.rows) {
       const code = codeOf(row), name = nameOf(row); if (!code || !name) continue;
       if (row.etf === true || row.etn === true) continue;
