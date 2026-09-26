@@ -4,6 +4,8 @@ import { ProviderError, compactDate, numberValue, changeSign } from "../common.m
 const UA = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/149 Safari/537.36";
 const ALLOWED_HOSTS = new Set(["m.stock.naver.com", "api.stock.naver.com", "polling.finance.naver.com", "finance.naver.com", "new.real.download.dws.co.kr"]);
 const KIS_SECTOR_MASTER_URL = "https://new.real.download.dws.co.kr/common/master/idxcode.mst.zip";
+const MAX_KIS_MASTER_BYTES = 2_100_000;
+const MAX_KIS_ENTRY_BYTES = 2_000_000;
 const cache = new Map();
 const binaryCache = new Map();
 let gate = Promise.resolve();
@@ -63,6 +65,39 @@ async function request(url, { ttlMs = 0, accept = "application/json,text/plain,*
   return { ...value, cached: false };
 }
 
+async function readBoundedBytes(response, maxBytes) {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const declared = Number(contentLength);
+    if (!Number.isFinite(declared) || declared < 0 || declared > maxBytes) {
+      if (response.body) await response.body.cancel().catch(() => undefined);
+      throw new ProviderError("BAD_KIS_MASTER", "KIS public master exceeds the archive size limit");
+    }
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new ProviderError("BAD_KIS_MASTER", "KIS public master exceeds the archive size limit");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    throw new ProviderError("BAD_KIS_MASTER", "KIS public master body could not be read");
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
 async function requestBytes(url, { ttlMs = 0, accept = "application/octet-stream,*/*" } = {}) {
   const parsed = new URL(url);
   if (!ALLOWED_HOSTS.has(parsed.hostname)) throw new ProviderError("HOST_NOT_ALLOWED", `Blocked upstream host: ${parsed.hostname}`);
@@ -72,7 +107,7 @@ async function requestBytes(url, { ttlMs = 0, accept = "application/octet-stream
   const value = await limited(async () => {
     const response = await fetchGet(parsed, { "user-agent": UA, accept });
     if (!response.ok) throw new ProviderError(`HTTP_${response.status}`, `KIS public master returned HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
+    const bytes = await readBoundedBytes(response, MAX_KIS_MASTER_BYTES);
     return { bytes, url: key };
   });
   if (ttlMs > 0) binaryCache.set(key, { expires: Date.now() + ttlMs, value });
@@ -92,14 +127,25 @@ function unzipSingleEntry(zipBytes) {
   const method = u16(cdOffset + 10), compressedSize = u32(cdOffset + 20), uncompressedSize = u32(cdOffset + 24);
   const nameLength = u16(cdOffset + 28), localOffset = u32(cdOffset + 42);
   const name = z.subarray(cdOffset + 46, cdOffset + 46 + nameLength).toString("utf8");
-  if (name !== "idxcode.mst" || uncompressedSize > 2_000_000 || localOffset + 30 > z.length || u32(localOffset) !== 0x04034b50) throw new ProviderError("BAD_KIS_MASTER", "Unexpected KIS sector master ZIP structure");
+  if (name !== "idxcode.mst" || uncompressedSize > MAX_KIS_ENTRY_BYTES || localOffset + 30 > z.length || u32(localOffset) !== 0x04034b50) throw new ProviderError("BAD_KIS_MASTER", "Unexpected KIS sector master ZIP structure");
   const localNameLength = u16(localOffset + 26), localExtraLength = u16(localOffset + 28);
   const dataStart = localOffset + 30 + localNameLength + localExtraLength;
   const dataEnd = dataStart + compressedSize;
   if (dataStart < 0 || dataEnd > z.length) throw new ProviderError("BAD_KIS_MASTER", "KIS sector master ZIP entry exceeds archive bounds");
   const compressed = z.subarray(dataStart, dataEnd);
-  const raw = method === 0 ? compressed : method === 8 ? inflateRawSync(compressed) : null;
-  if (!raw || raw.length !== uncompressedSize) throw new ProviderError("BAD_KIS_MASTER", `Unsupported or invalid KIS sector master ZIP method ${method}`);
+  let raw;
+  if (method === 0) {
+    raw = compressed;
+  } else if (method === 8) {
+    try {
+      raw = inflateRawSync(compressed, { maxOutputLength: MAX_KIS_ENTRY_BYTES });
+    } catch {
+      throw new ProviderError("BAD_KIS_MASTER", "KIS sector master ZIP deflate data is invalid or exceeds the size limit");
+    }
+  } else {
+    throw new ProviderError("BAD_KIS_MASTER", `Unsupported or invalid KIS sector master ZIP method ${method}`);
+  }
+  if (raw.length !== uncompressedSize) throw new ProviderError("BAD_KIS_MASTER", `Unsupported or invalid KIS sector master ZIP method ${method}`);
   return raw;
 }
 
