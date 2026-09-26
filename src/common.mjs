@@ -18,6 +18,23 @@ export function numberValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+export function koreanWonValue(value) {
+  if (value === null || value === undefined || value === "" || value === "-") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value).replaceAll(",", "").trim();
+  if (!/[조억만]/.test(text)) return numberValue(value);
+  const units = [["조", 1_000_000_000_000], ["억", 100_000_000], ["만", 10_000]];
+  let total = 0;
+  let matched = false;
+  for (const [unit, multiplier] of units) {
+    const found = text.match(new RegExp(`([+-]?\\d+(?:\\.\\d+)?)\\s*${unit}`));
+    if (!found) continue;
+    total += Number(found[1]) * multiplier;
+    matched = true;
+  }
+  return matched && Number.isFinite(total) ? total : numberValue(value);
+}
+
 export function changeSign(value) {
   const name = typeof value === "object" && value ? value.name : String(value || "");
   if (name === "RISING" || name === "2" || name === "+") return "2";

@@ -1,5 +1,5 @@
 import { inflateRawSync } from "node:zlib";
-import { ProviderError, compactDate, numberValue, changeSign } from "../common.mjs";
+import { ProviderError, compactDate, numberValue, koreanWonValue, changeSign } from "../common.mjs";
 
 const UA = "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/149 Safari/537.36";
 const ALLOWED_HOSTS = new Set(["m.stock.naver.com", "api.stock.naver.com", "polling.finance.naver.com", "finance.naver.com", "new.real.download.dws.co.kr"]);
@@ -286,7 +286,7 @@ export async function stockQuote(code, { include_extended = true } = {}) {
     change_sign: changeSign(b.compareToPreviousPrice),
     change_rate: numberValue(b.fluctuationsRatio),
     volume: numberValue(get("accumulatedTradingVolume", "거래량")),
-    trading_value: numberValue(get("accumulatedTradingValue", "거래대금")),
+    trading_value: koreanWonValue(get("accumulatedTradingValue", "거래대금")),
     open: numberValue(get("openPrice", "시가")),
     high: numberValue(get("highPrice", "고가")),
     low: numberValue(get("lowPrice", "저가")),
@@ -341,7 +341,7 @@ export async function etfQuote(code) {
     change_sign: changeSign(b.compareToPreviousPrice ?? row.compareToPreviousPrice),
     change_rate: numberValue(b.fluctuationsRatio ?? row.fluctuationsRatio),
     volume: numberValue(b.accumulatedTradingVolume ?? row.accumulatedTradingVolume),
-    trading_value: numberValue(b.accumulatedTradingValue ?? row.accumulatedTradingValueRaw ?? row.accumulatedTradingValue),
+    trading_value: koreanWonValue(b.accumulatedTradingValue ?? row.accumulatedTradingValueRaw ?? row.accumulatedTradingValue),
     prev_close: numberValue(b.lastClosePrice),
     open: numberValue(b.openPrice),
     high: numberValue(b.highPrice),
@@ -423,6 +423,18 @@ export async function marketSector(sector_code, opts = {}) {
   };
 }
 
+export function normalizeNewsItem(row) {
+  const digits = String(row?.datetime ?? row?.date ?? "").replace(/[^0-9]/g, "");
+  return {
+    id: row?.id ?? row?.articleId ?? null,
+    provider: row?.officeId ?? null,
+    date: digits.length >= 8 ? digits.slice(0, 8) : null,
+    time: digits.length > 8 ? digits.slice(8, 14) : null,
+    title: row?.titleFull ?? row?.title ?? null,
+    category: null,
+  };
+}
+
 export async function marketNews({ stock_code, date, time, limit = 20 } = {}) {
   const url = stock_code ? `https://m.stock.naver.com/front-api/news/list/integration?itemCode=${encodeURIComponent(stock_code)}&page=1&pageSize=${Math.min(limit, 200)}` : `https://m.stock.naver.com/front-api/news/category?category=mainnews&page=1&pageSize=${Math.min(limit, 200)}`;
   const { json, cached } = await request(url, { ttlMs: 30000 });
@@ -437,8 +449,14 @@ export async function marketNews({ stock_code, date, time, limit = 20 } = {}) {
     if (dt.slice(0, 8) < cutoffDate) return true;
     if (dt.slice(0, 8) > cutoffDate) return false;
     return !cutoffTime || dt.slice(8, 14) <= cutoffTime;
-  }).slice(0, limit).map((r) => ({ title: r.titleFull ?? r.title, datetime: r.datetime, office: r.officeName, article_id: r.articleId ?? r.id, body: r.body, url: r.url ?? r.endUrl }));
-  return { data: { stock_code: stock_code || null, items }, sourceApi: stock_code ? "naver-stock-news" : "naver-market-news", rawRef: url, cached };
+  }).slice(0, limit).map(normalizeNewsItem);
+  return {
+    data: { stock_code: stock_code || null, items },
+    sourceApi: stock_code ? "naver-stock-news" : "naver-market-news",
+    rawRef: url,
+    cached,
+    warnings: ["Naver officeId is exposed as provider; KIS category codes are unavailable, so category is null. Naver timestamps may have minute-only precision."],
+  };
 }
 
 function moverValue(row, ranking) {

@@ -49,7 +49,7 @@ async function resolveCode(value) {
 }
 
 export function createMcpServer() {
-  const server = new McpServer({ name: "korean-stock-mcp", version: "0.1.0-dev1" });
+  const server = new McpServer({ name: "korean-stock-mcp", version: "0.1.0-dev2" });
   register(server, "resolve_stock", "Resolve a Korean listed stock name, abbreviation, or code.", { query:z.string().min(1), market:z.enum(["KOSPI","KOSDAQ","KONEX","ALL"]).default("ALL"), limit:z.number().int().min(1).max(50).default(10) }, (a)=>naver.resolveStock(a.query,a));
   register(server, "get_stock_master", "Return the current Korean listed-instrument master snapshot from public Naver sources.", { market:z.enum(["KOSPI","KOSDAQ","KONEX","ALL"]).default("ALL"), include_delisted:z.boolean().default(false), updated_after:z.string().optional() }, naver.getStockMaster);
   register(server, "stock_get_quote", "Get a Korean stock quote and common valuation fields.", { stock_code:z.string().min(1), market_div_code:z.string().default("J"), include_extended:z.boolean().default(true) }, async (a)=>naver.stockQuote(await resolveCode(a.stock_code),a));
@@ -65,7 +65,7 @@ export function createMcpServer() {
   register(server, "dart_search_filings", "Search OpenDART disclosures through the existing no-secret OpenDART MCP.", { companyName:z.string().min(1).optional(), stockCode:z.string().regex(/^\d{6}$/).optional(), corpCode:z.string().min(1).optional(), corp_code:z.string().min(1).optional(), stock_code:z.string().regex(/^\d{6}$/).optional(), start_date:z.string().optional(), end_date:z.string().optional(), disclosure_type:z.enum(["A","B","C","D","E","F","G","H","I","J","ALL"]).default("ALL"), final_only:z.boolean().default(true), page:z.number().int().min(1).default(1), page_size:z.number().int().min(1).max(100).default(20) }, dart.searchFilings, "DART");
   register(server, "dart_get_company_overview", "Get OpenDART company overview.", { companyName:z.string().min(1).optional(), stockCode:z.string().regex(/^\d{6}$/).optional() }, dart.companyOverview, "DART");
   register(server, "dart_get_financial_statement", "Get OpenDART primary financial accounts and rows.", { companyName:z.string().min(1).optional(), stockCode:z.string().regex(/^\d{6}$/).optional(), year:z.string().regex(/^\d{4}$/), reportCode:z.enum(["11013","11012","11014","11011"]).default("11011") }, dart.financialStatement, "DART");
-  register(server, "system_health", "Report Korean stock compatibility MCP status and current coverage.", {}, async()=>({ data:{ status:"ok", server:"korean-stock-mcp", version:"0.1.0-dev1", endpoint:"/mcp", read_only:true, tools_implemented:PLAYMCP_TOOL_NAMES, tools_stubbed:Object.entries(COVERAGE).filter(([,v])=>v==="unsupported").map(([k])=>k), required_secrets:[], personal_auth_used:false, coverage:COVERAGE }, sourceApi:"mcp-skeleton", warnings:["WORK-B candidate only: permanent TMCP registry/service/GitHub finalization remains deferred to later WORK roles."] }));
+  register(server, "system_health", "Report Korean stock compatibility MCP status and current coverage.", {}, async()=>({ data:{ status:"ok", server:"korean-stock-mcp", version:"0.1.0-dev2", endpoint:"/mcp", read_only:true, tools_implemented:PLAYMCP_TOOL_NAMES, tools_stubbed:Object.entries(COVERAGE).filter(([,v])=>v==="unsupported").map(([k])=>k), required_secrets:[], personal_auth_used:false, coverage:COVERAGE }, sourceApi:"mcp-skeleton", warnings:[] }));
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   return { server, transport };
 }
