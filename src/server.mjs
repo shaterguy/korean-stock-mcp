@@ -18,7 +18,7 @@ export const PLAYMCP_TOOL_NAMES = Object.freeze([
 
 export const COVERAGE = Object.freeze({
   resolve_stock: "full", get_stock_master: "partial", stock_get_quote: "partial", stock_get_orderbook: "unsupported",
-  stock_get_price_history: "partial", resolve_etf: "full", etf_get_quote: "partial", etf_get_holdings: "probing",
+  stock_get_price_history: "partial", resolve_etf: "full", etf_get_quote: "partial", etf_get_holdings: "partial",
   market_get_index: "partial", market_get_sector: "partial", market_get_news: "full", market_get_movers: "partial",
   dart_search_filings: "partial", dart_get_company_overview: "full", dart_get_financial_statement: "partial", system_health: "full",
 });

@@ -51,8 +51,8 @@ function unwrapFront(json) {
   return json;
 }
 
-function codeOf(row) { return String(row?.stock_code ?? row?.stockCode ?? row?.itemCode ?? row?.code ?? row?.cd ?? "").trim(); }
-function nameOf(row) { return String(row?.stockName ?? row?.itemName ?? row?.name ?? row?.nm ?? row?.korName ?? "").trim(); }
+function codeOf(row) { return String(row?.stock_code ?? row?.stockCode ?? row?.itemCode ?? row?.itemcode ?? row?.code ?? row?.cd ?? "").trim(); }
+function nameOf(row) { return String(row?.stockName ?? row?.itemName ?? row?.itemname ?? row?.name ?? row?.nm ?? row?.korName ?? "").trim(); }
 function marketOf(row) {
   const v = row?.stockExchangeType?.name ?? row?.stockExchangeName ?? row?.market ?? row?.typeCode ?? row?.sosok ?? row?.mt;
   if (v === "0" || v === 0 || /KOSPI/i.test(String(v))) return "KOSPI";
@@ -207,10 +207,10 @@ export async function stockHistory(code, { period = "D", start_date, end_date, l
 }
 
 export async function resolveEtf(query, { limit = 10 } = {}) {
-  const url = "https://m.stock.naver.com/api/stocks/etf?page=1&pageSize=2000";
+  const url = "https://finance.naver.com/api/sise/etfItemList.nhn";
   const { json, cached } = await request(url, { ttlMs: 300000 });
   const q = query.toLowerCase().replace(/\s+/g, "");
-  const stocks = Array.isArray(json?.stocks) ? json.stocks : [];
+  const stocks = json?.result?.etfItemList || json?.result?.itemList || [];
   const matches = stocks.filter((r) => codeOf(r) === query || nameOf(r).toLowerCase().replace(/\s+/g, "").includes(q)).slice(0, limit).map((r) => ({ stock_code: codeOf(r), name: nameOf(r) }));
   if (!matches.length) throw new ProviderError("NOT_FOUND", `No ETF match for '${query}'`);
   return { data: { matches }, sourceApi: "naver-etf-universe", rawRef: url, cached };
@@ -219,8 +219,7 @@ export async function resolveEtf(query, { limit = 10 } = {}) {
 export async function etfQuote(code) {
   const url = `https://m.stock.naver.com/api/etf/${encodeURIComponent(code)}/basic`;
   const { json: b, cached } = await request(url, { ttlMs: 5000 });
-  const universe = await request("https://m.stock.naver.com/api/stocks/etf?page=1&pageSize=2000", { ttlMs: 300000 });
-  const row = (universe.json?.stocks || []).find((x) => codeOf(x) === code) || {};
+  const row = {};
   const data = {
     stock_code: code,
     price: numberValue(b.closePrice ?? row.closePrice),
@@ -243,7 +242,7 @@ export async function etfQuote(code) {
     tracking_index: b.etfBaseIndex ?? b.trackingIndexName ?? b.trackingIndex ?? undefined,
     asset_manager: b.issuerName ?? b.assetManagementCompany ?? b.assetManager ?? undefined,
   };
-  return { data, sourceApi: "naver-etf-basic+universe", rawRef: url, cached: cached && universe.cached, warnings: ["KIS 전용 괴리율·추적오차·CU 필드는 Naver 공개 응답에 없으면 생략됩니다."] };
+  return { data, sourceApi: "naver-etf-basic", rawRef: url, cached, warnings: ["KIS 전용 괴리율·추적오차·CU 필드는 Naver 공개 응답에 없으면 생략됩니다."] };
 }
 
 export async function etfHoldings(code, { limit = 30 } = {}) {
@@ -293,7 +292,8 @@ export async function marketSector(sector_code, opts = {}) {
 export async function marketNews({ stock_code, date, time, limit = 20 } = {}) {
   const url = stock_code ? `https://m.stock.naver.com/front-api/news/list/integration?itemCode=${encodeURIComponent(stock_code)}&page=1&pageSize=${Math.min(limit, 200)}` : `https://m.stock.naver.com/front-api/news/category?category=mainnews&page=1&pageSize=${Math.min(limit, 200)}`;
   const { json, cached } = await request(url, { ttlMs: 15000 });
-  const rows = unwrapFront(json) || [];
+  const result = unwrapFront(json);
+  const rows = Array.isArray(result) ? result : (result?.stockNewsList || result?.newsList || result?.items || result?.list || result?.news || []);
   const cutoffDate = compactDate(date);
   const cutoffTime = time ? String(time).replace(/[^0-9]/g, "").slice(0, 6) : undefined;
   const items = rows.filter((r) => {
