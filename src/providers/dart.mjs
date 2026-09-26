@@ -114,10 +114,39 @@ export function normalizeFinancialStatement(companyInfo, raw, args) {
   };
 }
 
-export function normalizeFilings(raw) {
-  const filings = raw?.list || [];
-  if (!filings.length) throw new ProviderError("NO_DATA", "OpenDART has no filings for the requested search conditions.");
-  return { page: raw.page_no, page_size: raw.page_count, total: raw.total_count, total_page: raw.total_page, filings };
+function trimmedNullable(value) {
+  const normalized = nullable(value);
+  if (normalized === null) return null;
+  const trimmed = String(normalized).trim();
+  return trimmed || null;
+}
+
+export function normalizeFilings(raw, companyInfo = null) {
+  const rows = raw?.list || [];
+  if (!rows.length) throw new ProviderError("NO_DATA", "OpenDART has no filings for the requested search conditions.");
+  const filings = rows.map((row) => {
+    const receiptNo = trimmedNullable(row.rcept_no ?? row.receipt_no);
+    return {
+      receipt_no: receiptNo,
+      corp_code: trimmedNullable(row.corp_code),
+      corp_name: trimmedNullable(row.corp_name),
+      stock_code: trimmedNullable(row.stock_code),
+      report_name: trimmedNullable(row.report_nm ?? row.report_name),
+      filer_name: trimmedNullable(row.flr_nm ?? row.filer_name),
+      submitted_at: trimmedNullable(row.rcept_dt ?? row.submitted_at),
+      disclosure_type: trimmedNullable(row.pblntf_ty ?? row.disclosure_type),
+      remark: trimmedNullable(row.rm ?? row.remark),
+      url: receiptNo ? `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${encodeURIComponent(receiptNo)}` : null,
+    };
+  });
+  return {
+    company: companyInfo ? normalizeCompanyOverview(companyInfo).company : null,
+    filings,
+    page: raw.page_no,
+    page_size: raw.page_count,
+    total_count: raw.total_count,
+    total_page: raw.total_page,
+  };
 }
 
 export async function searchFilings(args) {
@@ -132,7 +161,8 @@ export async function searchFilings(args) {
     page_no: args.page || 1,
     page_count: args.page_size || 20,
   });
-  const data = normalizeFilings(raw);
+  const companyInfo = corp_code && raw?.list?.length ? await remoteCall("get_company_info", { corp_code }) : null;
+  const data = normalizeFilings(raw, companyInfo);
   const warnings = [];
   if (args.disclosure_type && args.disclosure_type !== "ALL") warnings.push("Existing OpenDART MCP proxy does not expose disclosure_type filtering; unfiltered list returned.");
   if (args.final_only === false) warnings.push("Existing OpenDART MCP proxy does not expose final_only filtering.");

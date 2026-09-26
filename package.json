@@ -1,6 +1,6 @@
 {
   "name": "korean-stock-mcp",
-  "version": "0.1.0-dev2",
+  "version": "0.1.0-dev3",
   "private": true,
   "type": "module",
   "description": "Read-only Korean stock MCP compatibility layer using public no-secret data sources",

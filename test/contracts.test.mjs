@@ -68,6 +68,28 @@ test("DART financial rows map to normalized major accounts",()=>{
   assert.equal(data.accounts.total_equity.amount_krw,436_320_337_000_000);
 });
 
+test("DART populated filing list maps to PlayMCP contract",()=>{
+  const data=normalizeFilings({
+    page_no:1,page_count:5,total_count:2727,total_page:546,
+    list:[{
+      corp_code:"00126380",corp_name:" 삼성전자 ",stock_code:"005930",corp_cls:"Y",
+      report_nm:" 임원ㆍ주요주주특정증권등소유상황보고서 ",rcept_no:"20260922000524",
+      flr_nm:" 허은녕 ",rcept_dt:"20260922",rm:"",
+    }],
+  },companyFixture);
+  assert.deepEqual(data.company,{company_name:"삼성전자",stock_code:"005930",corp_code:"00126380",market:"KOSPI"});
+  assert.deepEqual(data.filings[0],{
+    receipt_no:"20260922000524",corp_code:"00126380",corp_name:"삼성전자",stock_code:"005930",
+    report_name:"임원ㆍ주요주주특정증권등소유상황보고서",filer_name:"허은녕",submitted_at:"20260922",
+    disclosure_type:null,remark:null,url:"https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260922000524",
+  });
+  assert.equal(data.page,1);
+  assert.equal(data.page_size,5);
+  assert.equal(data.total_count,2727);
+  assert.equal(data.total_page,546);
+  assert.equal(Object.hasOwn(data,"total"),false);
+});
+
 test("DART empty filing list keeps PlayMCP NO_DATA behavior",()=>{
   assert.throws(()=>normalizeFilings({list:[]}), (error)=>error.code==="NO_DATA");
 });

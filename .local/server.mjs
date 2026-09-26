@@ -8,7 +8,7 @@ async function bodyJson(req) {
 }
 const app=http.createServer(async(req,res)=>{
   res.setHeader("Cache-Control","no-store"); res.setHeader("X-Content-Type-Options","nosniff");
-  if(req.method==="GET" && req.url==="/health") { res.writeHead(200,{"content-type":"application/json; charset=utf-8"}); res.end(JSON.stringify({ok:true,service:"korean-stock-mcp",version:"0.1.0-dev2",transport:"streamable-http",loopback:true,read_only:true,required_secrets:[]})); return; }
+  if(req.method==="GET" && req.url==="/health") { res.writeHead(200,{"content-type":"application/json; charset=utf-8"}); res.end(JSON.stringify({ok:true,service:"korean-stock-mcp",version:"0.1.0-dev3",transport:"streamable-http",loopback:true,read_only:true,required_secrets:[]})); return; }
   if(req.method!=="POST" || req.url!=="/mcp") { res.writeHead(404,{"content-type":"application/json; charset=utf-8"}); res.end(JSON.stringify({error:"not_found"})); return; }
   try {
     const parsed=await bodyJson(req); const built=createMcpServer();
