@@ -1,6 +1,6 @@
 # korean-stock-mcp
 
-WORK-A compatibility skeleton for the PlayMCP Korean-stock interface. It is read-only and uses only public no-secret Naver Finance endpoints plus the existing public OpenDART MCP. The current WORK-A tree is intentionally not registered as a permanent TMCP service; registration/service/GitHub preservation are reserved for the post-MID_REVIEW work.
+Read-only local MCP service for the PlayMCP Korean-stock interface. It exposes 16 compatible tools backed by public, no-secret Naver Finance and OpenDART sources. The Termux service binds to 127.0.0.1:17846, serves Streamable HTTP at /mcp, and reports readiness at /health.
 
 ## Install and verify
 
